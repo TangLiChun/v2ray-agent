@@ -3290,43 +3290,6 @@ initTuicProtocol() {
 #EOF
 #}
 
-# 初始化singbox route配置
-initSingBoxRouteConfig() {
-    downloadSingBoxGeositeDB
-    local outboundTag=$1
-    if [[ ! -f "${singBoxConfigPath}${outboundTag}_route.json" ]]; then
-        cat <<EOF >"${singBoxConfigPath}${outboundTag}_route.json"
-{
-    "route": {
-        "geosite": {
-            "path": "${singBoxConfigPath}geosite.db"
-        },
-        "rules": [
-            {
-                "domain": [
-                ],
-                "geosite": [
-                ],
-                "outbound": "${outboundTag}"
-            }
-        ]
-    }
-}
-EOF
-    fi
-}
-# 下载sing-box geosite db
-downloadSingBoxGeositeDB() {
-    if [[ ! -f "${singBoxConfigPath}geosite.db" ]]; then
-        if [[ "${release}" == "alpine" ]]; then
-            wget -q -P "${singBoxConfigPath}" https://github.com/Johnshall/sing-geosite/releases/latest/download/geosite.db
-        else
-            wget -q "${wgetShowProgressStatus}" -P "${singBoxConfigPath}" https://github.com/Johnshall/sing-geosite/releases/latest/download/geosite.db
-        fi
-
-    fi
-}
-
 # 添加sing-box路由规则
 addSingBoxRouteRule() {
     local outboundTag=$1
@@ -3358,6 +3321,11 @@ addSingBoxRouteRule() {
     if [[ "$(echo "${ruleSet}" | jq '.|length')" != "0" ]]; then
         ruleSetTag=$(echo "${ruleSet}" | jq '.|map(.tag)')
     fi
+    # block 出站在 sing-box 1.13 已移除，含 block 的目标改用 action:reject
+    local routeAction="\"outbound\": \"${outboundTag}\""
+    if echo "${outboundTag}" | grep -q "block"; then
+        routeAction="\"action\": \"reject\""
+    fi
     if [[ -n "${singBoxConfigPath}" ]]; then
         cat <<EOF >"${singBoxConfigPath}${routingName}.json"
 {
@@ -3366,7 +3334,7 @@ addSingBoxRouteRule() {
       {
         "rule_set":${ruleSetTag},
         "domain_regex":${domainRules},
-        "outbound": "${outboundTag}"
+        ${routeAction}
       }
     ],
     "rule_set":${ruleSet}
@@ -3422,17 +3390,9 @@ EOF
 }
 EOF
     elif echo "${tag}" | grep -q "block"; then
-
-        cat <<EOF >"${singBoxConfigPath}${tag}.json"
-{
-     "outbounds": [
-        {
-             "type": "block",
-             "tag": "${tag}"
-        }
-    ]
-}
-EOF
+        # sing-box 1.11 废弃、1.13 移除了 block 出站，拦截改由路由规则 action:reject 实现
+        # 这里无需生成出站，顺带清理可能残留的旧版 block 出站文件
+        rm "${singBoxConfigPath}${tag}.json" >/dev/null 2>&1
     else
         cat <<EOF >"${singBoxConfigPath}${tag}.json"
 {
@@ -7067,13 +7027,18 @@ addSingBoxIPRouteRule() {
     local ipCIDR=[]
     ipCIDR=$(echo "${ipList}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | sort -n | uniq | jq -R . | jq -s .)
 
+    # block 出站在 sing-box 1.13 已移除，含 block 的目标改用 action:reject
+    local routeAction="\"outbound\": \"${outboundTag}\""
+    if echo "${outboundTag}" | grep -q "block"; then
+        routeAction="\"action\": \"reject\""
+    fi
     cat <<EOF >"${singBoxConfigPath}${routingName}.json"
 {
   "route": {
     "rules": [
       {
         "ip_cidr": ${ipCIDR},
-        "outbound": "${outboundTag}"
+        ${routeAction}
       }
     ]
   }
@@ -7088,6 +7053,11 @@ addSingBoxGeoIPRouteRule() {
     local geoipCode=$2
     local routingName=$3
 
+    # block 出站在 sing-box 1.13 已移除，含 block 的目标改用 action:reject
+    local routeAction="\"outbound\": \"${outboundTag}\""
+    if echo "${outboundTag}" | grep -q "block"; then
+        routeAction="\"action\": \"reject\""
+    fi
     cat <<EOF >"${singBoxConfigPath}${routingName}.json"
 {
   "route": {
@@ -7096,7 +7066,7 @@ addSingBoxGeoIPRouteRule() {
         "rule_set": [
           "geoip_${geoipCode}_${routingName}"
         ],
-        "outbound": "${outboundTag}"
+        ${routeAction}
       }
     ],
     "rule_set": [
@@ -9993,16 +9963,6 @@ menu() {
     echoContent green "描述：八合一共存脚本\c"
     showInstallStatus
     checkWgetShowProgress
-    echoContent red "\n=========================== 推广区============================"
-    echoContent red "                                              "
-    echoContent yellow "VPS选购攻略"
-    echoContent green "https://www.v2ray-agent.com/archives/1679975663984"
-    echoContent yellow "年付10美金低价VPS AS4837"
-    echoContent green "https://www.v2ray-agent.com/archives/racknerdtao-can-zheng-li-nian-fu-10mei-yuan"
-    echoContent yellow "优质常驻套餐DMIT CN2-GIA"
-    echoContent green "https://www.v2ray-agent.com/archives/186cee7b-9459-4e57-b9b2-b07a4f36931c"
-    echoContent yellow "VPS探针：https://ping.v2ray-agent.com/"
-    echoContent red "                                              "
     echoContent red "=============================================================="
     if [[ -n "${coreInstallType}" ]]; then
         echoContent yellow "1.重新安装"
