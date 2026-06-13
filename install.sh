@@ -3040,7 +3040,18 @@ addFirewalldPortHopping() {
 addPortHopping() {
     local type=$1
     local targetPort=$2
-    if [[ -n "${portHoppingStart}" || -n "${portHoppingEnd}" ]]; then
+    local existingStart=
+    local existingEnd=
+
+    readPortHopping "${type}" "${targetPort}"
+    if [[ "${type}" == "hysteria2" ]]; then
+        existingStart=${hysteria2PortHoppingStart}
+        existingEnd=${hysteria2PortHoppingEnd}
+    elif [[ "${type}" == "tuic" ]]; then
+        existingStart=${tuicPortHoppingStart}
+        existingEnd=${tuicPortHoppingEnd}
+    fi
+    if [[ -n "${existingStart}" && -n "${existingEnd}" ]]; then
         echoContent red " ---> 已添加不可重复添加，可删除后重新添加"
         exit 0
     fi
@@ -3156,6 +3167,7 @@ deletePortHoppingRules() {
 # 端口跳跃菜单
 portHoppingMenu() {
     local type=$1
+    readInstallProtocolType
     # 判断iptables是否存在
     if ! find /usr/bin /usr/sbin | grep -q -w iptables; then
         echoContent red " ---> 无法识别iptables工具，无法使用端口跳跃，退出安装"
@@ -3197,6 +3209,27 @@ portHoppingMenu() {
         fi
     else
         portHoppingMenu
+    fi
+}
+
+# 安装 Hysteria2 时可选配置端口跳跃
+promptHysteria2PortHopping() {
+    local targetPort=$1
+
+    if [[ -z "${targetPort}" ]]; then
+        return
+    fi
+    if ! find /usr/bin /usr/sbin | grep -q -w iptables; then
+        echoContent yellow " ---> 未检测到 iptables，跳过端口跳跃配置"
+        return
+    fi
+
+    echoContent skyBlue "\n===================== Hysteria2 端口跳跃 =====================\n"
+    echoContent yellow "端口跳跃可将 UDP 端口范围（如 30000-31000）转发到 Hysteria2 主端口"
+    echoContent yellow "客户端需在链接中携带 mport 参数，sing-box 订阅使用 server_ports 字段"
+    read -r -p "是否配置 Hysteria2 端口跳跃？[y/n]:" hysteria2PortHoppingInstallStatus
+    if [[ "${hysteria2PortHoppingInstallStatus}" == "y" ]]; then
+        addPortHopping hysteria2 "${targetPort}"
     fi
 }
 
@@ -3372,7 +3405,10 @@ addSingBoxOutbound() {
              "type": "direct",
              "tag": "${tag}",
              "detour": "${detour}",
-             "domain_strategy": "${type}_only"
+             "domain_resolver": {
+                 "server": "dns_resolver",
+                 "strategy": "${type}_only"
+             }
         }
     ]
 }
@@ -3400,7 +3436,10 @@ EOF
         {
              "type": "direct",
              "tag": "${tag}",
-             "domain_strategy": "${type}_only"
+             "domain_resolver": {
+                 "server": "dns_resolver",
+                 "strategy": "${type}_only"
+             }
         }
     ]
 }
@@ -3702,8 +3741,37 @@ singBoxHysteria2Install() {
     showAccounts 4
 }
 
+# sing-box 1.12+ 要求配置 route.default_domain_resolver 或出站 domain_resolver
+initSingBoxDomainResolverConfig() {
+    local configDir="${singBoxConfigPath:-/etc/v2ray-agent/sing-box/conf/config/}"
+    cat <<EOF >"${configDir}00_dns_resolver.json"
+{
+  "dns": {
+    "servers": [
+      {
+        "tag": "dns_resolver",
+        "type": "udp",
+        "server": "114.114.114.114"
+      },
+      {
+        "tag": "local",
+        "type": "local"
+      }
+    ]
+  },
+  "route": {
+    "default_domain_resolver": {
+      "server": "dns_resolver",
+      "strategy": "prefer_ipv4"
+    }
+  }
+}
+EOF
+}
+
 # 合并config
 singBoxMergeConfig() {
+    initSingBoxDomainResolverConfig
     rm /etc/v2ray-agent/sing-box/conf/config.json >/dev/null 2>&1
     /etc/v2ray-agent/sing-box/sing-box merge config.json -C /etc/v2ray-agent/sing-box/conf/config/ -D /etc/v2ray-agent/sing-box/conf/ >/dev/null 2>&1
 }
@@ -4277,6 +4345,8 @@ initTCPBrutal() {
 initSingBoxConfig() {
     echoContent skyBlue "\n进度 $2/${totalProgress} : 初始化sing-box配置"
 
+    initSingBoxDomainResolverConfig
+
     echo
     local uuid=
     local addClientsStatus=
@@ -4559,6 +4629,7 @@ EOF
     ]
 }
 EOF
+        promptHysteria2PortHopping "${result[-1]}"
     elif [[ -z "$3" ]]; then
         rm /etc/v2ray-agent/sing-box/conf/config/06_hysteria2_inbounds.json >/dev/null 2>&1
     fi
@@ -5007,7 +5078,11 @@ EOF
     down: "${hysteria2ClientDownloadSpeed} Mbps"
 EOF
 
-        singBoxSubscribeLocalConfig=$(jq -r ". += [{\"tag\":\"${email}\",\"type\":\"hysteria2\",\"server\":\"${currentHost}\",\"server_port\":${singBoxHysteria2Port},\"up_mbps\":${hysteria2ClientUploadSpeed},\"down_mbps\":${hysteria2ClientDownloadSpeed},\"password\":\"${id}\",\"tls\":{\"enabled\":true,\"server_name\":\"${currentHost}\",\"alpn\":[\"h3\"]}}]" "/etc/v2ray-agent/subscribe_local/sing-box/${user}")
+        if echo "${port}" | grep -q "-"; then
+            singBoxSubscribeLocalConfig=$(jq -r ". += [{\"tag\":\"${email}\",\"type\":\"hysteria2\",\"server\":\"${currentHost}\",\"server_ports\":[\"${port}\"],\"up_mbps\":${hysteria2ClientUploadSpeed},\"down_mbps\":${hysteria2ClientDownloadSpeed},\"password\":\"${id}\",\"tls\":{\"enabled\":true,\"server_name\":\"${currentHost}\",\"alpn\":[\"h3\"]}}]" "/etc/v2ray-agent/subscribe_local/sing-box/${user}")
+        else
+            singBoxSubscribeLocalConfig=$(jq -r ". += [{\"tag\":\"${email}\",\"type\":\"hysteria2\",\"server\":\"${currentHost}\",\"server_port\":${singBoxHysteria2Port},\"up_mbps\":${hysteria2ClientUploadSpeed},\"down_mbps\":${hysteria2ClientDownloadSpeed},\"password\":\"${id}\",\"tls\":{\"enabled\":true,\"server_name\":\"${currentHost}\",\"alpn\":[\"h3\"]}}]" "/etc/v2ray-agent/subscribe_local/sing-box/${user}")
+        fi
         echo "${singBoxSubscribeLocalConfig}" | jq . >"/etc/v2ray-agent/subscribe_local/sing-box/${user}"
 
         echoContent yellow " ---> 二维码 Hysteria2(TLS)"
@@ -8291,17 +8366,7 @@ EOF
     fi
 
     if [[ "${coreInstallType}" == "2" && -f "${singBoxConfigPath}dns.json" ]]; then
-        cat <<EOF >${singBoxConfigPath}dns.json
-{
-    "dns": {
-        "servers":[
-            {
-                "type":"local"
-            }
-        ]
-    }
-}
-EOF
+        rm "${singBoxConfigPath}dns.json" >/dev/null 2>&1
     fi
 
     reloadCore
@@ -8326,17 +8391,7 @@ EOF
     fi
 
     if [[ "${coreInstallType}" == "2" && -f "${singBoxConfigPath}dns.json" ]]; then
-        cat <<EOF >${singBoxConfigPath}dns.json
-{
-    "dns": {
-        "servers":[
-            {
-                "type":"local"
-            }
-        ]
-    }
-}
-EOF
+        rm "${singBoxConfigPath}dns.json" >/dev/null 2>&1
     fi
 
     reloadCore
@@ -9834,11 +9889,17 @@ realityScanner() {
 }
 # hysteria管理
 manageHysteria() {
+    readInstallType
+    readInstallProtocolType
     echoContent skyBlue "\n进度  1/1 : Hysteria2 管理"
     echoContent red "\n=============================================================="
     local hysteria2Status=
     if [[ -n "${singBoxConfigPath}" ]] && [[ -f "/etc/v2ray-agent/sing-box/conf/config/06_hysteria2_inbounds.json" ]]; then
         echoContent yellow "依赖第三方sing-box\n"
+        readPortHopping "hysteria2" "${singBoxHysteria2Port}"
+        if [[ -n "${hysteria2PortHoppingStart}" && -n "${hysteria2PortHoppingEnd}" ]]; then
+            echoContent green " ---> 当前端口跳跃: ${hysteria2PortHoppingStart}-${hysteria2PortHoppingEnd} -> ${singBoxHysteria2Port}"
+        fi
         echoContent yellow "1.重新安装"
         echoContent yellow "2.卸载"
         echoContent yellow "3.端口跳跃管理"
